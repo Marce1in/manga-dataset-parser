@@ -36,6 +36,22 @@ uv run manga-dataset clean-panels --overwrite
 `clean-panels` converts source images to scratch PNGs, runs the local cleanup
 pipeline, standardizes final images to 512x768 PNG, and writes metadata.
 
+The final dataset is split into `train/<class_slug>` and `test/<class_slug>`.
+The default `--train-fraction 0.8` writes 48 train and 12 test images for each
+60-page class. The test split is balanced across the 20%, 50%, and 90% source
+anchor groups, with JoJo's part midpoints treated as equivalent groups.
+
+## Parallelism
+
+`clean-panels` has three independent worker controls:
+
+- `--scratch-workers`: process pool for polished-image to scratch-PNG conversion
+- `--detector-workers`: process count for RT-DETR cleanup shards
+- `--standardize-workers`: process pool for final 512x768 PNG standardization
+
+Each detector worker loads its own RT-DETR model. Keep this count lower than
+CPU cores unless memory has been measured; the default is 2.
+
 ## Strength
 
 The default profile follows the FrankYomik reference behavior: detector

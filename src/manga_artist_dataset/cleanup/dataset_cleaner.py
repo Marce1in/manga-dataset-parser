@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tempfile
 from collections import Counter
+from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,14 +14,24 @@ from typing import Protocol
 from PIL import Image
 
 from manga_artist_dataset.cleanup.config import CleanupConfig
+from manga_artist_dataset.cleanup.dataset_split import (
+    DEFAULT_TRAIN_FRACTION,
+    DatasetSplitAssignment,
+    assign_train_test_splits,
+    class_split_counts,
+    expected_split_counts,
+    split_counts,
+    validate_train_fraction,
+)
 from manga_artist_dataset.cleanup.image_standardize import (
     DEFAULT_TARGET_SIZE,
     ImageTargetSize,
     standardization_record,
     standardize_image_file,
 )
-from manga_artist_dataset.cleanup.pipeline import build_default_manga_cleanup_pipeline
+from manga_artist_dataset.cleanup.parallel import clean_directory_parallel
 from manga_artist_dataset.cleanup.scratch_png import ensure_under_root, prepare_scratch_png_records, resolve_record_path
+from manga_artist_dataset.concurrency import bounded_worker_count, require_positive_worker_count
 from manga_artist_dataset.io.files import recreate_dir, sha256_file, workspace_path
 from manga_artist_dataset.io.jsonl import load_jsonl, write_json_object, write_jsonl
 from manga_artist_dataset.json_types import JsonObject
@@ -45,6 +57,10 @@ class DatasetCleanupConfig:
     expected_total: int = DEFAULT_EXPECTED_TOTAL
     expected_per_class: int = DEFAULT_EXPECTED_PER_CLASS
     cleanup_config: CleanupConfig = field(default_factory=CleanupConfig)
+    scratch_workers: int = 8
+    detector_workers: int = 2
+    standardize_workers: int = 8
+    train_fraction: float = DEFAULT_TRAIN_FRACTION
 
 
 class MangaPageCleanerRunner(Protocol):
@@ -72,6 +88,7 @@ class LocalMangaPageCleanerRunner:
     """
 
     cleanup_config: CleanupConfig
+    detector_workers: int
 
     def clean(self, input_root: Path, output_root: Path) -> list[Path]:
         """Clean a directory of scratch PNG pages.
@@ -79,8 +96,23 @@ class LocalMangaPageCleanerRunner:
         Example:
             `runner.clean(Path("png"), Path("raw_cleaned"))`.
         """
-        pipeline = build_default_manga_cleanup_pipeline(self.cleanup_config)
-        return pipeline.clean_directory(input_root, output_root)
+        return clean_directory_parallel(input_root, output_root, self.cleanup_config, self.detector_workers)
+
+
+@dataclass(frozen=True)
+class CleanedRecordTask:
+    """One finalized metadata row scheduled for standardization.
+
+    Example:
+        `CleanedRecordTask(config, png_root, raw_root, source, png)`.
+    """
+
+    config: DatasetCleanupConfig
+    png_root: Path
+    raw_cleaned_root: Path
+    source: JsonObject
+    png: JsonObject
+    split_assignment: DatasetSplitAssignment
 
 
 def clean_panels(config: DatasetCleanupConfig, runner: MangaPageCleanerRunner | None = None) -> JsonObject:
@@ -89,12 +121,14 @@ def clean_panels(config: DatasetCleanupConfig, runner: MangaPageCleanerRunner | 
     Example:
         `clean_panels(DatasetCleanupConfig(Path("polished"), Path("cleaned"), True))`.
     """
+    validate_train_fraction(config.train_fraction)
     records = load_source_records(config.input_root)
     validate_counts(records, config.expected_total, config.expected_per_class)
     recreate_dir(config.output_root, config.overwrite)
-    active_runner = runner or LocalMangaPageCleanerRunner(config.cleanup_config)
+    active_runner = runner or LocalMangaPageCleanerRunner(config.cleanup_config, config.detector_workers)
     cleaned_records = run_cleanup_in_scratch(config, records, active_runner)
     validate_counts(cleaned_records, config.expected_total, config.expected_per_class)
+    validate_split_counts(cleaned_records, config.expected_per_class, config.train_fraction)
     verify_final_dataset(config.output_root, cleaned_records)
     write_jsonl(config.output_root / "metadata.jsonl", cleaned_records)
     report = build_cleaned_report(config, cleaned_records)
@@ -116,9 +150,21 @@ def run_cleanup_in_scratch(
         scratch_root = Path(scratch_name)
         png_root = scratch_root / "png_pages"
         raw_cleaned_root = scratch_root / "cleaned_pages"
-        png_records = prepare_scratch_png_records(source_records, config.input_root.resolve(), png_root.resolve())
+        png_records = prepare_scratch_png_records(
+            source_records,
+            config.input_root.resolve(),
+            png_root.resolve(),
+            config.scratch_workers,
+        )
         runner.clean(png_root, raw_cleaned_root)
-        return build_cleaned_metadata(config, png_root, raw_cleaned_root, source_records, png_records)
+        return build_cleaned_metadata(
+            config,
+            png_root,
+            raw_cleaned_root,
+            source_records,
+            png_records,
+            config.standardize_workers,
+        )
 
 
 def load_source_records(input_root: Path) -> list[JsonObject]:
@@ -139,20 +185,70 @@ def build_cleaned_metadata(
     raw_cleaned_root: Path,
     source_records: list[JsonObject],
     png_records: list[JsonObject],
+    worker_count: int = 1,
 ) -> list[JsonObject]:
     """Build final metadata while standardizing each cleaned page.
 
     Example:
         `rows = build_cleaned_metadata(config, png_root, raw_root, source_rows, png_rows)`.
     """
+    require_positive_worker_count(worker_count, "standardize_workers")
     ensure_record_counts_match(source_records, png_records)
+    split_assignments = assign_train_test_splits(source_records, config.train_fraction)
+    tasks = cleaned_record_tasks(config, png_root, raw_cleaned_root, source_records, png_records, split_assignments)
+    if worker_count == 1 or len(tasks) <= 1:
+        return [cleaned_record_from_task(task) for task in tasks]
+    return cleaned_records_with_workers(tasks, worker_count)
+
+
+def cleaned_record_tasks(
+    config: DatasetCleanupConfig,
+    png_root: Path,
+    raw_cleaned_root: Path,
+    source_records: list[JsonObject],
+    png_records: list[JsonObject],
+    split_assignments: list[DatasetSplitAssignment],
+) -> list[CleanedRecordTask]:
+    """Build standardization tasks in source metadata order.
+
+    Example:
+        `tasks = cleaned_record_tasks(config, png_root, raw_root, sources, pngs, splits)`.
+    """
+    ensure_record_counts_match(source_records, split_assignments)
     return [
-        cleaned_record(config, png_root.resolve(), raw_cleaned_root.resolve(), source, png)
-        for source, png in zip(source_records, png_records, strict=True)
+        CleanedRecordTask(config, png_root.resolve(), raw_cleaned_root.resolve(), source, png, split_assignment)
+        for source, png, split_assignment in zip(source_records, png_records, split_assignments, strict=True)
     ]
 
 
-def ensure_record_counts_match(source_records: list[JsonObject], png_records: list[JsonObject]) -> None:
+def cleaned_records_with_workers(tasks: list[CleanedRecordTask], worker_count: int) -> list[JsonObject]:
+    """Finalize cleaned metadata through a bounded process pool.
+
+    Example:
+        `records = cleaned_records_with_workers(tasks, 4)`.
+    """
+    bounded_count = bounded_worker_count(worker_count, len(tasks), "standardize_workers")
+    with ProcessPoolExecutor(max_workers=bounded_count) as executor:
+        return list(executor.map(cleaned_record_from_task, tasks))
+
+
+def cleaned_record_from_task(task: CleanedRecordTask) -> JsonObject:
+    """Standardize one cleaned image and return final metadata.
+
+    Example:
+        `row = cleaned_record_from_task(task)`.
+    """
+    return cleaned_record(
+        task.config,
+        task.png_root,
+        task.raw_cleaned_root,
+        task.source,
+        task.png,
+        task.split_assignment,
+    )
+
+
+def ensure_record_counts_match(source_records: Sequence[object], png_records: Sequence[object]) -> None:
     """Validate scratch PNG metadata cardinality before final writes.
 
     Example:
@@ -163,12 +259,25 @@ def ensure_record_counts_match(source_records: list[JsonObject], png_records: li
     raise ValueError(f"Expected {len(source_records)} scratch PNG records, found {len(png_records)}.")
 
 
+def validate_split_counts(records: list[JsonObject], expected_per_class: int, train_fraction: float) -> None:
+    """Validate per-class train/test counts.
+
+    Example:
+        `validate_split_counts(records, 60, 0.8)`.
+    """
+    expected = expected_split_counts(expected_per_class, train_fraction)
+    bad = {slug: counts for slug, counts in class_split_counts(records).items() if counts != expected}
+    if bad:
+        raise ValueError(f"Expected split counts {expected} per class, found {bad}.")
+
+
 def cleaned_record(
     config: DatasetCleanupConfig,
     png_root: Path,
     raw_cleaned_root: Path,
     source: JsonObject,
     png: JsonObject,
+    split_assignment: DatasetSplitAssignment,
 ) -> JsonObject:
     """Write one standardized cleaned image and return its metadata row.
 
@@ -178,13 +287,20 @@ def cleaned_record(
     png_path = resolve_record_path(png, "output_path")
     ensure_under_root(png_path, png_root)
     raw_cleaned_path = raw_cleaned_root / png_path.relative_to(png_root)
-    cleaned_path = config.output_root.resolve() / raw_cleaned_path.relative_to(raw_cleaned_root)
+    cleaned_path = (
+        config.output_root.resolve() / split_assignment.split_name / raw_cleaned_path.relative_to(raw_cleaned_root)
+    )
     ensure_same_dimensions(png_path, raw_cleaned_path)
     standardize_image_file(raw_cleaned_path, cleaned_path, config.target_size)
-    return finalized_record(config, source, cleaned_path)
+    return finalized_record(config, source, cleaned_path, split_assignment)
 
 
-def finalized_record(config: DatasetCleanupConfig, source: JsonObject, cleaned_path: Path) -> JsonObject:
+def finalized_record(
+    config: DatasetCleanupConfig,
+    source: JsonObject,
+    cleaned_path: Path,
+    split_assignment: DatasetSplitAssignment,
+) -> JsonObject:
     """Return final metadata without references to temporary PNG paths.
 
     Example:
@@ -198,6 +314,8 @@ def finalized_record(config: DatasetCleanupConfig, source: JsonObject, cleaned_p
     cleaned["polished_height"] = source.get("height")
     cleaned["polished_bytes"] = source.get("bytes")
     cleaned["output_path"] = workspace_path(cleaned_path)
+    cleaned["split"] = split_assignment.split_name
+    cleaned["split_group"] = split_assignment.split_group
     cleaned["image_format"] = "PNG"
     cleaned["color_mode"] = "RGB"
     cleaned["cleanup"] = cleanup_record(config.cleanup_config)
@@ -292,7 +410,7 @@ def verify_final_dataset(output_root: Path, records: list[JsonObject]) -> None:
     Example:
         `verify_final_dataset(Path("cleaned"), records)`.
     """
-    png_files = sorted(output_root.glob("*/*.png"))
+    png_files = sorted(output_root.glob("*/*/*.png"))
     if len(png_files) != len(records):
         raise ValueError(f"Cleaned file count mismatch: {len(png_files)} files vs {len(records)} rows.")
 
@@ -308,6 +426,8 @@ def build_cleaned_report(config: DatasetCleanupConfig, records: list[JsonObject]
         "total_pages": len(records),
         "file_extension_counts": {".png": len(records)},
         "class_counts": class_counts(records),
+        "split_counts": split_counts(records),
+        "class_split_counts": class_split_counts(records),
         "targets": target_reports(records),
     }
 
@@ -325,6 +445,10 @@ def cleaned_report_config(config: DatasetCleanupConfig) -> JsonObject:
         "created_at": datetime.now(UTC).isoformat(),
         "cleanup": cleanup_record(config.cleanup_config),
         "standardization": standardization_record(config.target_size),
+        "scratch_workers": config.scratch_workers,
+        "detector_workers": config.detector_workers,
+        "standardize_workers": config.standardize_workers,
+        "train_fraction": config.train_fraction,
     }
 
 
@@ -339,6 +463,8 @@ def target_reports(records: list[JsonObject]) -> list[JsonObject]:
         slug = record_class_slug(record)
         targets.setdefault(slug, new_target_report(record, slug))
         targets[slug]["selected_page_count"] = int(targets[slug]["selected_page_count"]) + 1
+        split_name = str(record.get("split"))
+        targets[slug][split_name] = int(targets[slug].get(split_name, 0)) + 1
     return [targets[key] for key in sorted(targets)]
 
 
@@ -354,4 +480,6 @@ def new_target_report(record: JsonObject, slug: str) -> JsonObject:
         "series": record.get("series"),
         "class_slug": slug,
         "selected_page_count": 0,
+        "train": 0,
+        "test": 0,
     }

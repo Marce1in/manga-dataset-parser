@@ -2,6 +2,8 @@
 __pycache__/
 *.py[oc]
 build/
+!src/manga_artist_dataset/build/
+!src/manga_artist_dataset/build/*.py
 dist/
 wheels/
 *.egg-info

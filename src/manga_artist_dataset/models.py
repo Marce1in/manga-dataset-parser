@@ -75,6 +75,8 @@ class BuildConfig:
     filter_double_spreads: bool = False
     split_double_spreads: bool = False
     split_double_spread_label_ids: set[int] = field(default_factory=set)
+    download_workers: int = 12
+    download_host_delay_seconds: float = 0.1
 
 
 @dataclass

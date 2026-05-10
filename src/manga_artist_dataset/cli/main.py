@@ -81,6 +81,8 @@ def add_build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     parser.add_argument("--filter-double-spreads", action="store_true")
     parser.add_argument("--split-double-spreads", action="store_true")
     parser.add_argument("--split-double-spreads-for-labels", type=comma_separated_ints, default=set())
+    parser.add_argument("--download-workers", default=12, type=worker_count)
+    parser.add_argument("--download-host-delay-seconds", default=0.1, type=nonnegative_float)
     parser.add_argument("--no-strict-targets", action="store_true")
 
 
@@ -101,6 +103,10 @@ def add_panel_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     parser.add_argument("--output-root", type=Path, default=CLEAN_OUTPUT_ROOT)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--enable-artwork-inpainting", action="store_true")
+    parser.add_argument("--scratch-workers", default=8, type=worker_count)
+    parser.add_argument("--detector-workers", default=2, type=worker_count)
+    parser.add_argument("--standardize-workers", default=8, type=worker_count)
+    parser.add_argument("--train-fraction", default=0.8, type=fraction)
 
 
 def add_cleanup_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -143,6 +149,8 @@ def build_config_from_args(args: argparse.Namespace) -> BuildConfig:
         filter_double_spreads=args.filter_double_spreads,
         split_double_spreads=args.split_double_spreads,
         split_double_spread_label_ids=args.split_double_spreads_for_labels,
+        download_workers=args.download_workers,
+        download_host_delay_seconds=args.download_host_delay_seconds,
     )
 
 
@@ -152,6 +160,10 @@ def cleanup_config_from_args(args: argparse.Namespace) -> DatasetCleanupConfig:
         output_root=args.output_root,
         overwrite=args.overwrite,
         cleanup_config=CleanupConfig(enable_artwork_inpainting=args.enable_artwork_inpainting),
+        scratch_workers=args.scratch_workers,
+        detector_workers=args.detector_workers,
+        standardize_workers=args.standardize_workers,
+        train_fraction=args.train_fraction,
     )
 
 
@@ -201,6 +213,27 @@ def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("value must be >= 0")
+    return parsed
+
+
+def worker_count(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("worker count must be >= 1")
+    return parsed
+
+
+def nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be >= 0")
+    return parsed
+
+
+def fraction(value: str) -> float:
+    parsed = float(value)
+    if not 0 < parsed < 1:
+        raise argparse.ArgumentTypeError("value must be > 0 and < 1")
     return parsed
 
 

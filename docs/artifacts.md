@@ -7,7 +7,12 @@
 - `polished_pages`: source page cache used to avoid repeated downloads
 - `panel_cleaned_pages`: final local cleanup output standardized to 512x768 PNG
 
-Each dataset folder contains class folders plus:
+`panel_cleaned_pages` stores images under split and class folders:
+
+- `train/<class_slug>/*.png`
+- `test/<class_slug>/*.png`
+
+Each generated dataset root also contains:
 
 - `metadata.jsonl`
 - `dataset_report.json`

@@ -2,21 +2,66 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from manga_artist_dataset.concurrency import bounded_worker_count, require_positive_worker_count
 from manga_artist_dataset.io.files import sha256_file, workspace_path
 from manga_artist_dataset.json_types import JsonObject
 
 
-def prepare_scratch_png_records(records: list[JsonObject], input_root: Path, output_root: Path) -> list[JsonObject]:
+@dataclass(frozen=True)
+class ScratchPngTask:
+    """One source metadata row scheduled for scratch PNG conversion.
+
+    Example:
+        `ScratchPngTask(record, Path("in"), Path("out"))`.
+    """
+
+    record: JsonObject
+    input_root: Path
+    output_root: Path
+
+
+def prepare_scratch_png_records(
+    records: list[JsonObject],
+    input_root: Path,
+    output_root: Path,
+    worker_count: int = 1,
+) -> list[JsonObject]:
     """Write scratch PNG files and return transient metadata for them.
 
     Example:
         `prepare_scratch_png_records(records, Path("polished"), Path("scratch/png"))`.
     """
-    return [scratch_png_record(record, input_root, output_root) for record in records]
+    require_positive_worker_count(worker_count, "scratch_workers")
+    tasks = [ScratchPngTask(record, input_root, output_root) for record in records]
+    if worker_count == 1 or len(tasks) <= 1:
+        return [scratch_png_record_from_task(task) for task in tasks]
+    return scratch_png_records_with_workers(tasks, worker_count)
+
+
+def scratch_png_records_with_workers(tasks: list[ScratchPngTask], worker_count: int) -> list[JsonObject]:
+    """Convert scratch PNG tasks through a bounded process pool.
+
+    Example:
+        `scratch_png_records_with_workers(tasks, 4)`.
+    """
+    bounded_count = bounded_worker_count(worker_count, len(tasks), "scratch_workers")
+    with ProcessPoolExecutor(max_workers=bounded_count) as executor:
+        return list(executor.map(scratch_png_record_from_task, tasks))
+
+
+def scratch_png_record_from_task(task: ScratchPngTask) -> JsonObject:
+    """Write one scratch PNG task and return transient metadata.
+
+    Example:
+        `scratch_png_record_from_task(task)`.
+    """
+    return scratch_png_record(task.record, task.input_root, task.output_root)
 
 
 def scratch_png_record(record: JsonObject, input_root: Path, output_root: Path) -> JsonObject:

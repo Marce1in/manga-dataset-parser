@@ -20,6 +20,8 @@ uv run manga-dataset build \
   --use-all-sources \
   --filter-color-pages \
   --filter-double-spreads \
+  --download-workers 12 \
+  --download-host-delay-seconds 0.1 \
   --overwrite
 ```
 
@@ -44,7 +46,12 @@ uv run python -m manga_artist_dataset cleanup ./downloaded-images ./cleaned-imag
 Run the local cleanup pipeline and write the final 512x768 PNG dataset:
 
 ```bash
-uv run manga-dataset clean-panels --overwrite
+uv run manga-dataset clean-panels \
+  --scratch-workers 8 \
+  --detector-workers 2 \
+  --standardize-workers 8 \
+  --train-fraction 0.8 \
+  --overwrite
 ```
 
 Quality checks:

@@ -51,6 +51,19 @@ def test_prepare_scratch_png_records_preserves_class_and_writes_png(tmp_path: Pa
     assert records[0]["height"] == 5
 
 
+def test_prepare_scratch_png_records_parallel_preserves_order(tmp_path: Path) -> None:
+    input_root = tmp_path / "polished"
+    source_paths = [write_source_image(input_root, f"sample_{index}.jpg") for index in range(2)]
+    write_source_metadata(input_root, source_paths)
+
+    output_root = tmp_path / "png"
+    source_records = read_jsonl(input_root / "metadata.jsonl")
+    records = prepare_scratch_png_records(source_records, input_root.resolve(), output_root.resolve(), worker_count=2)
+
+    assert [Path(str(record["output_path"])).name for record in records] == ["sample_0.png", "sample_1.png"]
+    assert all(Path(str(record["output_path"])).exists() for record in records)
+
+
 def test_standardize_image_preserves_aspect_and_pads_white() -> None:
     target_size = ImageTargetSize(width=10, height=12)
     source = Image.new("RGB", (20, 10), "black")
@@ -102,6 +115,10 @@ def test_clean_panels_uses_scratch_png_and_standardizes_output(tmp_path: Path) -
     assert not scratch_root.exists()
     assert [record["width"] for record in records] == [16, 16]
     assert [record["height"] for record in records] == [24, 24]
+    assert [record["split"] for record in records] == ["test", "train"]
+    assert [record["split_group"] for record in records] == ["20% anchor", "50% anchor"]
+    assert output_split_dirs(output_root, records) == {"test", "train"}
+    assert report["split_counts"] == {"test": 1, "train": 1}
     assert all("png_output_path" not in record for record in records)
     assert all(str(record["output_path"]).startswith(str(output_root)) for record in records)
     assert all(cleanup_mode(record) == "speech_bubble_cleanup" for record in records)
@@ -115,6 +132,9 @@ def cleanup_config_for_test(input_root: Path, output_root: Path) -> DatasetClean
         target_size=ImageTargetSize(width=16, height=24),
         expected_total=2,
         expected_per_class=2,
+        scratch_workers=1,
+        detector_workers=1,
+        standardize_workers=2,
     )
 
 
@@ -133,10 +153,14 @@ def write_source_metadata(input_root: Path, source_paths: Path | list[Path]) -> 
 
 
 def source_record(source_path: Path) -> dict[str, object]:
+    page_number = 1 if "0" in source_path.stem else 2
+    anchor = "20% anchor" if page_number == 1 else "50% anchor"
     return {
         "label_id": 1,
         "artist": "Example Artist",
         "series": "Example Series",
+        "chapter": f"{anchor}: Chapter {page_number}",
+        "original_page_index": page_number,
         "output_path": str(source_path),
         "sha256": "old",
         "width": 3,
@@ -153,3 +177,7 @@ def cleanup_mode(record: dict[str, object]) -> object:
     cleanup = record["cleanup"]
     assert isinstance(cleanup, dict)
     return cleanup["mode"]
+
+
+def output_split_dirs(output_root: Path, records: list[dict[str, object]]) -> set[str]:
+    return {Path(str(record["output_path"])).relative_to(output_root).parts[0] for record in records}

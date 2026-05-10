@@ -89,6 +89,7 @@ uv run manga-dataset clean-panels \
   --scratch-workers 8 \
   --detector-workers 2 \
   --standardize-workers 8 \
+  --train-fraction 0.8 \
   --overwrite
 ```
 

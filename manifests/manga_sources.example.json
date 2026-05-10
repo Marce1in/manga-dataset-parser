@@ -1,0 +1,83 @@
+{
+  "targets": [
+    {
+      "label_id": 9,
+      "artist": "Hirohiko Araki",
+      "series": "JoJo's Bizarre Adventure",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": [
+        {
+          "chapter": "Chapter 120",
+          "path": "licensed_sources/jojo/chapter-120"
+        },
+        {
+          "chapter": "Chapter 121",
+          "path": "licensed_sources/jojo/chapter-121.cbz"
+        }
+      ]
+    },
+    {
+      "label_id": 8,
+      "artist": "Akira Toriyama",
+      "series": "Dragon Ball",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 7,
+      "artist": "Eiichiro Oda",
+      "series": "One Piece",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 6,
+      "artist": "Masashi Kishimoto",
+      "series": "Naruto",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 5,
+      "artist": "Kentaro Miura",
+      "series": "Berserk",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 4,
+      "artist": "Takehiko Inoue",
+      "series": "Vagabond",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 3,
+      "artist": "Tatsuki Fujimoto",
+      "series": "Chainsaw Man",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 2,
+      "artist": "Naoki Urasawa",
+      "series": "Monster",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 1,
+      "artist": "Hiromu Arakawa",
+      "series": "Fullmetal Alchemist",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    },
+    {
+      "label_id": 10,
+      "artist": "Gege Akutami",
+      "series": "Jujutsu Kaisen",
+      "permission_note": "Document the permission you have for these sources.",
+      "sources": []
+    }
+  ]
+}

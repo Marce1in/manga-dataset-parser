@@ -1,0 +1,47 @@
+[project]
+name = "manga-artist-dataset"
+version = "0.1.0"
+description = "Dataset pipeline for manga artist page classification experiments."
+authors = [
+    { name = "Marce1in", email = "marcelo.desenvolvedor.contato@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.4.4",
+    "opencv-python-headless>=4.13.0.92",
+    "pillow>=12.2.0",
+    "torch>=2.11.0",
+    "transformers>=5.8.0",
+]
+
+[project.scripts]
+manga-dataset = "manga_artist_dataset.cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.11.2,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.0.0",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+    "types-requests>=2.33.0.20260508",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "C4", "SIM", "ARG", "PTH", "RUF"]
+ignore = ["S101", "S310", "S603"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["manga_artist_dataset"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
